@@ -413,7 +413,13 @@ final class AppStore {
     }
 
     private var serverPath: String {
-        Bundle.main.bundleURL
+        if let bundledServer = Bundle.main.resourceURL?
+            .appendingPathComponent("dist/mcp/index.js"),
+           FileManager.default.fileExists(atPath: bundledServer.path) {
+            return bundledServer.path
+        }
+
+        return Bundle.main.bundleURL
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .appendingPathComponent("dist/mcp/index.js").path
