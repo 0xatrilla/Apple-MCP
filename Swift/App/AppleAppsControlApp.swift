@@ -3,6 +3,28 @@ import EventKit
 import Network
 import SwiftUI
 
+struct GitHubRelease: Decodable {
+    let tagName: String
+    let htmlURL: URL
+    let assets: [GitHubReleaseAsset]
+
+    enum CodingKeys: String, CodingKey {
+        case tagName = "tag_name"
+        case htmlURL = "html_url"
+        case assets
+    }
+}
+
+struct GitHubReleaseAsset: Decodable {
+    let name: String
+    let browserDownloadURL: URL
+
+    enum CodingKeys: String, CodingKey {
+        case name
+        case browserDownloadURL = "browser_download_url"
+    }
+}
+
 enum IntegrationID: String, CaseIterable, Identifiable, Codable {
     case calendar
     case reminders
@@ -506,6 +528,72 @@ final class AppStore {
         }
     }
 
+    func checkForUpdates() {
+        setupOutput = "Checking GitHub Releases..."
+        Task {
+            do {
+                let releaseURL = URL(string: "https://api.github.com/repos/0xatrilla/Apple-MCP/releases/latest")!
+                var request = URLRequest(url: releaseURL)
+                request.setValue("Apple-MCP-Updater", forHTTPHeaderField: "User-Agent")
+
+                let (data, response) = try await URLSession.shared.data(for: request)
+                guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+                    throw URLError(.badServerResponse)
+                }
+
+                let release = try JSONDecoder().decode(GitHubRelease.self, from: data)
+                guard let asset = release.assets.first(where: { $0.name.lowercased().hasSuffix(".dmg") }) else {
+                    throw NSError(domain: "AppleMCPUpdater", code: 1, userInfo: [NSLocalizedDescriptionKey: "Latest release has no DMG asset."])
+                }
+
+                let currentVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.0.0"
+                let latestVersion = release.tagName.trimmingCharacters(in: CharacterSet(charactersIn: "vV"))
+                if compareVersions(latestVersion, currentVersion) <= 0 {
+                    await MainActor.run {
+                        setupOutput = "Apple MCP is up to date. Current: \(currentVersion). Latest: \(release.tagName)."
+                    }
+                    return
+                }
+
+                await MainActor.run {
+                    setupOutput = "Downloading \(asset.name)..."
+                }
+
+                let (temporaryURL, _) = try await URLSession.shared.download(from: asset.browserDownloadURL)
+                let downloadsURL = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
+                    ?? FileManager.default.homeDirectoryForCurrentUser
+                let destinationURL = downloadsURL.appendingPathComponent(asset.name)
+                if FileManager.default.fileExists(atPath: destinationURL.path) {
+                    try FileManager.default.removeItem(at: destinationURL)
+                }
+                try FileManager.default.moveItem(at: temporaryURL, to: destinationURL)
+
+                await MainActor.run {
+                    setupOutput = "Downloaded \(asset.name) to Downloads. Opening installer..."
+                    NSWorkspace.shared.open(destinationURL)
+                }
+            } catch {
+                await MainActor.run {
+                    setupOutput = "Update check failed: \(error.localizedDescription)"
+                }
+            }
+        }
+    }
+
+    private func compareVersions(_ lhs: String, _ rhs: String) -> Int {
+        let left = lhs.split(separator: ".").map { Int($0) ?? 0 }
+        let right = rhs.split(separator: ".").map { Int($0) ?? 0 }
+        let count = max(left.count, right.count)
+        for index in 0..<count {
+            let l = index < left.count ? left[index] : 0
+            let r = index < right.count ? right[index] : 0
+            if l != r {
+                return l < r ? -1 : 1
+            }
+        }
+        return 0
+    }
+
     private func runShell(_ executable: String, _ arguments: [String]) {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
@@ -842,6 +930,13 @@ struct AppleAppsControlApp: App {
                 }
         }
         .windowToolbarStyle(.unified(showsTitle: false))
+        .commands {
+            CommandGroup(after: .appInfo) {
+                Button("Check for Updates...") {
+                    store.checkForUpdates()
+                }
+            }
+        }
 
         Settings {
             SettingsView()
@@ -2189,9 +2284,19 @@ struct MenuBarPanel: View {
                 MenuActionButton(title: "Open Apple Apps MCP", icon: "macwindow") { openMain() }
                 MenuActionButton(title: "Install MCP Config", icon: "bolt.badge.checkmark") { store.installPreferredClient() }
                 MenuActionButton(title: "Refresh Permissions", icon: "arrow.clockwise") { store.refreshPermissions() }
+                MenuActionButton(title: "Check for Updates", icon: "arrow.down.circle") { store.checkForUpdates() }
                 MenuActionButton(title: "Run Setup Again", icon: "sparkles") {
                     store.restartOnboarding()
                     openMain()
+                }
+                if !store.setupOutput.isEmpty {
+                    Text(store.setupOutput)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(3)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
                 }
                 Divider().padding(.vertical, 3).padding(.horizontal, 6)
                 MenuActionButton(title: "Quit", icon: "power", role: .destructive) { NSApp.terminate(nil) }
