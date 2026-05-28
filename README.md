@@ -1,3 +1,6 @@
+<img width="100" height="100" alt="AppIcon" src="https://github.com/user-attachments/assets/fae91f34-91d6-4f03-a7c6-a68ebc948fcd" />
+
+
 # Apple MCP
 
 Apple MCP is a local macOS app and MCP server for giving AI tools controlled access to Apple apps.
