@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.build/
+.swiftpm/
+.DS_Store
+logs/
+tmp/
+Assets/
+memory/
+.cursor/

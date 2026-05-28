@@ -1,0 +1,29 @@
+{
+  "name": "apple-apps-mcp",
+  "version": "0.1.0",
+  "description": "Local MCP server and macOS setup app for Apple apps.",
+  "type": "module",
+  "bin": {
+    "apple-apps-mcp": "./dist/mcp/index.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev:mcp": "tsx src/mcp/index.ts",
+    "test": "vitest run",
+    "swift:build": "swift build",
+    "swift:run": "swift run AppleAppsControl"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.18.2",
+    "zod": "^4.1.13"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.14"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
