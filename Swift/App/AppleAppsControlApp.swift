@@ -840,7 +840,6 @@ struct AppleAppsControlApp: App {
                         store.refreshPermissions()
                     }
                 }
-                .frame(minWidth: 880, minHeight: 620)
         }
         .windowToolbarStyle(.unified(showsTitle: false))
 
@@ -868,9 +867,11 @@ struct RootView: View {
         ZStack {
             if store.config.onboardingComplete {
                 ContentView()
+                    .frame(minWidth: 880, minHeight: 620)
                     .transition(.opacity)
             } else {
                 OnboardingView()
+                    .frame(width: 540, height: 620)
                     .transition(.asymmetric(
                         insertion: .opacity,
                         removal: .opacity.combined(with: .scale(scale: 1.03))
@@ -878,6 +879,36 @@ struct RootView: View {
             }
         }
         .animation(.smooth(duration: 0.5), value: store.config.onboardingComplete)
+        .background(WindowFrameConfigurator(isOnboarding: !store.config.onboardingComplete))
+    }
+}
+
+struct WindowFrameConfigurator: NSViewRepresentable {
+    let isOnboarding: Bool
+
+    func makeNSView(context: Context) -> NSView {
+        NSView()
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        DispatchQueue.main.async {
+            guard let window = nsView.window else { return }
+            if isOnboarding {
+                let target = NSSize(width: 540, height: 620)
+                window.minSize = target
+                window.maxSize = target
+                if abs(window.frame.size.width - target.width) > 2 || abs(window.frame.size.height - target.height) > 2 {
+                    var frame = window.frame
+                    let center = NSPoint(x: frame.midX, y: frame.midY)
+                    frame.size = target
+                    frame.origin = NSPoint(x: center.x - target.width / 2, y: center.y - target.height / 2)
+                    window.setFrame(frame, display: true, animate: true)
+                }
+            } else {
+                window.minSize = NSSize(width: 880, height: 620)
+                window.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+            }
+        }
     }
 }
 
@@ -1612,17 +1643,8 @@ struct OnboardingView: View {
     private let stepCount = 5
 
     var body: some View {
-        ZStack {
-            LinearGradient(
-                colors: [Color.accentColor.opacity(0.18), Color(nsColor: .windowBackgroundColor)],
-                startPoint: .topLeading, endPoint: .bottomTrailing
-            )
-            .ignoresSafeArea()
-
-            card
-                .frame(maxWidth: 500)
-                .padding(40)
-        }
+        card
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var card: some View {
@@ -1675,12 +1697,7 @@ struct OnboardingView: View {
             }
             .padding(20)
         }
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 20, style: .continuous)
-                .strokeBorder(Color(nsColor: .separatorColor).opacity(0.5), lineWidth: 1)
-        )
-        .shadow(color: .black.opacity(0.2), radius: 26, y: 14)
+        .background(.regularMaterial)
     }
 
     @ViewBuilder private var stepContent: some View {
