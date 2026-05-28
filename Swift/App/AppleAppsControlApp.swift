@@ -871,7 +871,7 @@ struct RootView: View {
                     .transition(.opacity)
             } else {
                 OnboardingView()
-                    .frame(width: 540, height: 620)
+                    .frame(width: 760, height: 560)
                     .transition(.asymmetric(
                         insertion: .opacity,
                         removal: .opacity.combined(with: .scale(scale: 1.03))
@@ -894,7 +894,7 @@ struct WindowFrameConfigurator: NSViewRepresentable {
         DispatchQueue.main.async {
             guard let window = nsView.window else { return }
             if isOnboarding {
-                let target = NSSize(width: 540, height: 620)
+                let target = NSSize(width: 760, height: 560)
                 window.minSize = target
                 window.maxSize = target
                 if abs(window.frame.size.width - target.width) > 2 || abs(window.frame.size.height - target.height) > 2 {
@@ -1390,40 +1390,36 @@ struct ProviderCard: View {
 
     var body: some View {
         Button(action: action) {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack(alignment: .top) {
-                    ProviderBrandIcon(client: client, size: 40)
-                    Spacer(minLength: 0)
-                    Image(systemName: selected ? "checkmark.circle.fill" : "circle")
-                        .font(.system(size: 18))
-                        .foregroundStyle(selected ? AnyShapeStyle(client.accent) : AnyShapeStyle(.tertiary))
-                }
-
+            HStack(spacing: 12) {
+                ProviderBrandIcon(client: client, size: 36)
                 VStack(alignment: .leading, spacing: 3) {
                     Text(client.title)
                         .font(.headline)
                         .foregroundStyle(.primary)
-                    Text(client.kind)
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(.fill.tertiary, in: Capsule())
                     Text(client.tagline)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(2)
                         .fixedSize(horizontal: false, vertical: true)
-                        .padding(.top, 2)
+                }
+                Spacer(minLength: 0)
+                VStack(alignment: .trailing, spacing: 8) {
+                    Image(systemName: selected ? "checkmark.circle.fill" : "circle")
+                        .font(.system(size: 18))
+                        .foregroundStyle(selected ? AnyShapeStyle(client.accent) : AnyShapeStyle(.tertiary))
+                    Text(client.kind)
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
                 }
             }
-            .padding(14)
-            .frame(maxWidth: .infinity, minHeight: 138, alignment: .topLeading)
-            .background(.fill.quaternary, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .padding(12)
+            .frame(maxWidth: .infinity, minHeight: 76, alignment: .leading)
+            .background(selected ? client.accent.opacity(0.10) : Color(nsColor: .controlBackgroundColor).opacity(0.72),
+                        in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .strokeBorder(selected ? client.accent.opacity(0.8) : Color(nsColor: .separatorColor).opacity(0.6),
-                                  lineWidth: selected ? 2 : 1)
+                    .strokeBorder(selected ? client.accent.opacity(0.75) : Color(nsColor: .separatorColor).opacity(0.45),
+                                  lineWidth: selected ? 1.5 : 1)
             )
         }
         .buttonStyle(.plain)
@@ -1643,61 +1639,74 @@ struct OnboardingView: View {
     private let stepCount = 5
 
     var body: some View {
-        card
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        VStack(spacing: 0) {
+            onboardingToolbar
+            Divider()
+            stepContent
+                .id(step)
+                .transition(.asymmetric(
+                    insertion: .move(edge: forward ? .trailing : .leading).combined(with: .opacity),
+                    removal: .move(edge: forward ? .leading : .trailing).combined(with: .opacity)
+                ))
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .clipped()
+            Divider()
+            footer
+        }
+        .background(Color(nsColor: .windowBackgroundColor))
     }
 
-    private var card: some View {
-        VStack(spacing: 0) {
-            ZStack {
-                OnboardingDots(count: stepCount, current: step)
-                HStack {
-                    Spacer()
-                    if step < stepCount - 1 {
-                        Button("Skip") { finish() }
-                            .buttonStyle(.plain)
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                    }
-                }
+    private var onboardingToolbar: some View {
+        HStack(spacing: 12) {
+            AppBrandIcon(size: 32)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Apple MCP")
+                    .font(.headline)
+                Text("On-device control for Apple apps")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
-            .padding(.horizontal, 22)
-            .padding(.top, 20)
-            .padding(.bottom, 10)
-
-            ZStack {
-                stepContent
-                    .id(step)
-                    .transition(.asymmetric(
-                        insertion: .move(edge: forward ? .trailing : .leading).combined(with: .opacity),
-                        removal: .move(edge: forward ? .leading : .trailing).combined(with: .opacity)
-                    ))
+            Spacer()
+            OnboardingDots(count: stepCount, current: step)
+            Spacer()
+            if step < stepCount - 1 {
+                Button("Skip") { finish() }
+                    .buttonStyle(.plain)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 58, alignment: .trailing)
+            } else {
+                Color.clear.frame(width: 58)
             }
-            .frame(maxWidth: .infinity)
-            .frame(height: 400)
-            .clipped()
-
-            Divider()
-
-            HStack {
-                if step > 0 {
-                    Button(action: back) {
-                        Label("Back", systemImage: "chevron.left")
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.large)
-                }
-                Spacer()
-                Button(action: primaryAction) {
-                    Text(primaryTitle).frame(minWidth: 96)
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
-                .keyboardShortcut(.defaultAction)
-            }
-            .padding(20)
         }
-        .background(.regularMaterial)
+        .padding(.horizontal, 24)
+        .frame(height: 72)
+        .background(.bar)
+    }
+
+    private var footer: some View {
+        HStack {
+            if step > 0 {
+                Button(action: back) {
+                    Label("Back", systemImage: "chevron.left")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.large)
+            }
+            Spacer()
+            Text(step == 0 ? "Everything stays local on this Mac." : "\(store.totalEnabledTools) MCP tools enabled")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Button(action: primaryAction) {
+                Text(primaryTitle).frame(minWidth: 112)
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
+            .keyboardShortcut(.defaultAction)
+        }
+        .padding(.horizontal, 24)
+        .frame(height: 76)
+        .background(.bar)
     }
 
     @ViewBuilder private var stepContent: some View {
@@ -1755,11 +1764,11 @@ struct StepHeader: View {
     let subtitle: String
 
     var body: some View {
-        VStack(spacing: 6) {
+        VStack(spacing: 7) {
             Text(title)
-                .font(.system(size: 22, weight: .bold))
+                .font(.system(size: 30, weight: .bold))
             Text(subtitle)
-                .font(.subheadline)
+                .font(.title3)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
@@ -1772,39 +1781,172 @@ struct WelcomeStep: View {
     @State private var appear = false
 
     var body: some View {
-        VStack(spacing: 20) {
-            Spacer(minLength: 0)
-            AppBrandIcon(size: 92)
-                .scaleEffect(appear ? 1 : 0.6)
-                .opacity(appear ? 1 : 0)
+        HStack(spacing: 34) {
+            VStack(alignment: .leading, spacing: 22) {
+                AppBrandIcon(size: 80)
+                    .scaleEffect(appear ? 1 : 0.8)
+                    .opacity(appear ? 1 : 0)
 
-            VStack(spacing: 10) {
-                Text("Apple Apps MCP")
-                    .font(.system(size: 27, weight: .bold))
-                Text("Give your AI assistant secure, on-device control of Calendar, Reminders, Notes, Mail, and more.")
-                    .font(.title3)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                    .fixedSize(horizontal: false, vertical: true)
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Apple app control")
+                        .font(.system(size: 38, weight: .bold))
+                        .lineLimit(2)
+                    Text("Give Codex, Claude, Raycast, and other MCP clients local access to Calendar, Reminders, Notes, Mail, Shortcuts, and Music.")
+                        .font(.title3)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                VStack(alignment: .leading, spacing: 10) {
+                    TrustLine(icon: "lock.fill", text: "Runs locally on your Mac")
+                    TrustLine(icon: "checkmark.shield.fill", text: "Native permissions stay under your control")
+                    TrustLine(icon: "bolt.horizontal.fill", text: "19 MCP tools ready to connect")
+                }
             }
-            .opacity(appear ? 1 : 0)
-            .offset(y: appear ? 0 : 14)
-            Spacer(minLength: 0)
+
+            AppPreviewPanel()
+                .frame(width: 280)
         }
-        .padding(.horizontal, 30)
+        .padding(42)
         .onAppear {
             withAnimation(.spring(response: 0.6, dampingFraction: 0.7).delay(0.05)) { appear = true }
         }
     }
 }
 
+struct TrustLine: View {
+    let icon: String
+    let text: String
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: icon)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(.green)
+                .frame(width: 18)
+            Text(text)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+        }
+    }
+}
+
+struct AppPreviewPanel: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Native integrations")
+                .font(.headline)
+            ForEach([IntegrationID.calendar, .mail, .notes, .reminders], id: \.self) { integration in
+                HStack(spacing: 10) {
+                    MacAppIconView(bundleIdentifier: integration.bundleIdentifier, fallbackSymbol: integration.symbol)
+                        .frame(width: 30, height: 30)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(integration.title)
+                            .font(.subheadline.weight(.medium))
+                        Text("\(integration.toolNames.count) tools")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                }
+                .padding(10)
+                .background(.fill.quaternary, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            }
+        }
+        .padding(16)
+        .surfaceCard(cornerRadius: 16)
+    }
+}
+
 struct CapabilitiesStep: View {
     var body: some View {
-        VStack(spacing: 12) {
+        VStack(spacing: 18) {
             StepHeader(title: "Enable Capabilities",
-                       subtitle: "Select which apps and features to enable.")
-            ScrollView {
-                VStack(spacing: 8) {
+                       subtitle: "Pick the Apple apps your AI clients are allowed to use.")
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 300), spacing: 12)], spacing: 12) {
+                ForEach(IntegrationID.allCases) { integration in
+                    OnboardingCapabilityRow(integration: integration)
+                }
+            }
+            .padding(.horizontal, 44)
+            .frame(maxWidth: .infinity)
+        }
+        .padding(.top, 26)
+    }
+}
+
+struct OnboardingCapabilityRow: View {
+    @Environment(AppStore.self) private var store
+    let integration: IntegrationID
+
+    var body: some View {
+        let enabled = store.config.integrations[integration] ?? true
+        HStack(spacing: 12) {
+            MacAppIconView(bundleIdentifier: integration.bundleIdentifier, fallbackSymbol: integration.symbol)
+                .frame(width: 34, height: 34)
+                .opacity(enabled ? 1 : 0.45)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(integration.title).font(.headline)
+                Text("\(integration.toolNames.count) tools")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 0)
+            Toggle("", isOn: Binding(
+                get: { enabled },
+                set: { store.setEnabled(integration, enabled: $0) }
+            ))
+            .labelsHidden()
+            .toggleStyle(.switch)
+        }
+        .padding(14)
+        .background(enabled ? Color(nsColor: .controlBackgroundColor).opacity(0.72) : Color(nsColor: .controlBackgroundColor).opacity(0.36),
+                    in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(Color(nsColor: .separatorColor).opacity(0.45), lineWidth: 1)
+        )
+    }
+}
+
+struct PermissionsStep: View {
+    @Environment(AppStore.self) private var store
+
+    var body: some View {
+        VStack(spacing: 18) {
+            StepHeader(title: "Grant Permissions",
+                       subtitle: "Calendar and Reminders use native macOS access. Other apps ask on first use.")
+            VStack(spacing: 10) {
+                OnboardingPermissionRow(title: "Calendar", status: store.calendarPermission, icon: "calendar") {
+                    store.requestPermission(for: .calendar)
+                }
+                OnboardingPermissionRow(title: "Reminders", status: store.remindersPermission, icon: "checklist") {
+                    store.requestPermission(for: .reminders)
+                }
+                HStack(spacing: 10) {
+                    Image(systemName: "info.circle").foregroundStyle(.secondary)
+                    Text("Notes, Mail, Music, and Shortcuts request Automation permission automatically the first time a tool runs.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer(minLength: 0)
+                }
+                .padding(12)
+                .background(.fill.quaternary, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            }
+            .frame(width: 520)
+        }
+        .padding(.top, 32)
+        .task { store.refreshPermissions() }
+    }
+}
+
+/*
+struct LegacyOnboardingCapabilityRows: View {
+    var body: some View {
+        ScrollView {
+            VStack(spacing: 8) {
                     ForEach(IntegrationID.allCases) { integration in
                         OnboardingCapabilityRow(integration: integration)
                     }
@@ -1817,7 +1959,7 @@ struct CapabilitiesStep: View {
     }
 }
 
-struct OnboardingCapabilityRow: View {
+struct LegacyOnboardingCapabilityRow: View {
     @Environment(AppStore.self) private var store
     let integration: IntegrationID
 
@@ -1846,7 +1988,7 @@ struct OnboardingCapabilityRow: View {
     }
 }
 
-struct PermissionsStep: View {
+struct LegacyPermissionsStep: View {
     @Environment(AppStore.self) private var store
 
     var body: some View {
@@ -1880,6 +2022,7 @@ struct PermissionsStep: View {
         .task { store.refreshPermissions() }
     }
 }
+*/
 
 struct OnboardingPermissionRow: View {
     let title: String
@@ -1923,20 +2066,20 @@ struct ConnectStep: View {
     @Environment(AppStore.self) private var store
 
     var body: some View {
-        VStack(spacing: 12) {
+        VStack(spacing: 18) {
             StepHeader(title: "Connect your AI app",
                        subtitle: "Pick where to register the local MCP server.")
-            ScrollView {
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 10)], spacing: 10) {
-                    ForEach(PreferredClient.allCases) { client in
-                        ProviderCard(client: client, selected: store.config.preferredClient == client) {
-                            store.config.preferredClient = client
-                            store.save()
-                        }
+            LazyVGrid(columns: [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)], spacing: 12) {
+                ForEach(PreferredClient.allCases) { client in
+                    ProviderCard(client: client, selected: store.config.preferredClient == client) {
+                        store.config.preferredClient = client
+                        store.save()
                     }
                 }
-                .padding(.horizontal, 22)
+            }
+            .padding(.horizontal, 44)
 
+            VStack(spacing: 8) {
                 Button {
                     store.installPreferredClient()
                 } label: {
@@ -1945,7 +2088,6 @@ struct ConnectStep: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
-                .padding(.top, 8)
 
                 if !store.setupOutput.isEmpty {
                     ScrollView {
@@ -1958,12 +2100,11 @@ struct ConnectStep: View {
                     }
                     .frame(maxHeight: 90)
                     .surfaceCard()
-                    .padding(.horizontal, 22)
-                    .padding(.top, 6)
+                    .padding(.horizontal, 44)
                 }
             }
         }
-        .padding(.top, 4)
+        .padding(.top, 26)
     }
 }
 
