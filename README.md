@@ -44,7 +44,7 @@ Risky tools require `confirm: true` and a short `reason`.
 
 ## Requirements
 
-- macOS 14 or newer
+- macOS 26 or newer
 - Xcode command line tools / Swift toolchain
 - Node.js 20 or newer
 - npm

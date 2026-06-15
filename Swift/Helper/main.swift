@@ -133,7 +133,7 @@ func listEvents(_ input: DateRangeInput) async throws -> [EventRecord] {
     let predicate = store.predicateForEvents(withStart: start, end: end, calendars: nil)
     return store.events(matching: predicate).map {
         EventRecord(
-            id: $0.eventIdentifier,
+            id: $0.eventIdentifier ?? "",
             title: $0.title ?? "",
             start: $0.startDate,
             end: $0.endDate,
@@ -154,8 +154,8 @@ func createEvent(_ input: CalendarCreateInput) async throws -> EventRecord {
     event.calendar = input.calendarId.flatMap { store.calendar(withIdentifier: $0) } ?? store.defaultCalendarForNewEvents
     try store.save(event, span: .thisEvent, commit: true)
     return EventRecord(
-        id: event.eventIdentifier,
-        title: event.title,
+        id: event.eventIdentifier ?? "",
+        title: event.title ?? "",
         start: event.startDate,
         end: event.endDate,
         calendar: event.calendar.title,
@@ -170,7 +170,7 @@ func fetchReminderRecords(matching predicate: NSPredicate) async -> [ReminderRec
             let records = (reminders ?? []).map {
                 ReminderRecord(
                     id: $0.calendarItemIdentifier,
-                    title: $0.title,
+                    title: $0.title ?? "",
                     calendar: $0.calendar.title,
                     notes: $0.notes,
                     dueDate: $0.dueDateComponents.flatMap { Calendar.current.date(from: $0) },
@@ -208,7 +208,7 @@ func createReminder(_ input: ReminderCreateInput) async throws -> ReminderRecord
     try store.save(reminder, commit: true)
     return ReminderRecord(
         id: reminder.calendarItemIdentifier,
-        title: reminder.title,
+        title: reminder.title ?? "",
         calendar: reminder.calendar.title,
         notes: reminder.notes,
         dueDate: input.dueDate,

@@ -57,7 +57,7 @@ cat > "$CONTENTS/Info.plist" <<PLIST
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>LSMinimumSystemVersion</key>
-  <string>14.0</string>
+  <string>26.0</string>
   <key>NSPrincipalClass</key>
   <string>NSApplication</string>
   <key>NSCalendarsFullAccessUsageDescription</key>

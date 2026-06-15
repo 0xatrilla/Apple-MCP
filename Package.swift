@@ -1,9 +1,9 @@
-// swift-tools-version: 6.0
+// swift-tools-version: 6.2
 import PackageDescription
 
 let package = Package(
     name: "AppleAppsMCP",
-    platforms: [.macOS(.v14)],
+    platforms: [.macOS(.v26)],
     products: [
         .executable(name: "AppleAppsControl", targets: ["AppleAppsControl"]),
         .executable(name: "AppleAppsHelper", targets: ["AppleAppsHelper"])

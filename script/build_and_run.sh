@@ -71,7 +71,7 @@ cat > "$INFO_PLIST" <<PLIST
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>LSMinimumSystemVersion</key>
-  <string>14.0</string>
+  <string>26.0</string>
   <key>NSPrincipalClass</key>
   <string>NSApplication</string>
   <key>NSCalendarsFullAccessUsageDescription</key>
@@ -102,7 +102,7 @@ cat > "$HELPER_INFO_PLIST" <<PLIST
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>LSMinimumSystemVersion</key>
-  <string>14.0</string>
+  <string>26.0</string>
   <key>NSPrincipalClass</key>
   <string>NSApplication</string>
   <key>LSBackgroundOnly</key>

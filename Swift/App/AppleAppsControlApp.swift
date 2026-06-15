@@ -261,6 +261,38 @@ struct AppConfig: Codable {
     }
 }
 
+/// Structured result of a setup action, so the UI can show a typed banner
+/// (with the right color + icon) and an optional copyable code block, instead
+/// of cramming success text, errors, and raw JSON into one gray string.
+struct SetupFeedback: Equatable {
+    enum Kind: Equatable {
+        case success, error, info, progress
+
+        var symbol: String {
+            switch self {
+            case .success: "checkmark.circle.fill"
+            case .error: "exclamationmark.triangle.fill"
+            case .info: "info.circle.fill"
+            case .progress: "arrow.triangle.2.circlepath"
+            }
+        }
+
+        var tint: Color {
+            switch self {
+            case .success: .green
+            case .error: .red
+            case .info: .accentColor
+            case .progress: .orange
+            }
+        }
+    }
+
+    var kind: Kind
+    var message: String
+    /// Optional monospace payload (e.g. JSON config or shell output) shown in a copyable block.
+    var code: String? = nil
+}
+
 @Observable
 @MainActor
 final class AppStore {
@@ -268,7 +300,9 @@ final class AppStore {
     var selection: SidebarSelection? = .integration(.calendar)
     var calendarPermission = "unknown"
     var remindersPermission = "unknown"
-    var setupOutput = ""
+    var feedback: SetupFeedback?
+    /// True while the loopback EventKit bridge is listening for MCP requests.
+    var bridgeRunning = false
     private var trustedCalendarGrant = UserDefaults.standard.bool(forKey: "AppleAppsMCP.trustedCalendarGrant")
     private var trustedRemindersGrant = UserDefaults.standard.bool(forKey: "AppleAppsMCP.trustedRemindersGrant")
 
@@ -282,6 +316,16 @@ final class AppStore {
         }
     }
 
+    /// Status line shown in the header / menu bar — reflects whether the MCP
+    /// bridge is actually listening, not a hardcoded "online" state.
+    var serverStatusText: String {
+        bridgeRunning ? "\(totalEnabledTools) tools active" : "Server not running"
+    }
+
+    var serverStatusColor: Color {
+        bridgeRunning ? .green : .orange
+    }
+
     func load() {
         do {
             let data = try Data(contentsOf: configURL)
@@ -290,6 +334,9 @@ final class AppStore {
             save()
         }
         refreshPermissions()
+        EventKitBridge.shared.onStateChange = { [weak self] running in
+            self?.bridgeRunning = running
+        }
         EventKitBridge.shared.start()
         if let icon = AppBranding.icon {
             NSApplication.shared.applicationIconImage = icon
@@ -303,7 +350,7 @@ final class AppStore {
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
             try encoder.encode(config).write(to: configURL, options: .atomic)
         } catch {
-            setupOutput = "Could not save config: \(error.localizedDescription)"
+            feedback = SetupFeedback(kind: .error, message: "Could not save config: \(error.localizedDescription)")
         }
     }
 
@@ -318,7 +365,7 @@ final class AppStore {
     }
 
     func restartOnboarding() {
-        setupOutput = ""
+        feedback = nil
         config.onboardingComplete = false
         save()
     }
@@ -343,7 +390,33 @@ final class AppStore {
         permissionStatus(for: integration) == "Allowed"
     }
 
+    func permissionIsDenied(for integration: IntegrationID) -> Bool {
+        let status = permissionStatus(for: integration)
+        return status == "Denied" || status == "Restricted"
+    }
+
+    /// Opens the relevant System Settings privacy pane. Used when access was
+    /// already denied — macOS will not re-show the permission prompt, so the
+    /// only path forward is for the user to flip it in System Settings.
+    func openPrivacySettings(for integration: IntegrationID) {
+        let anchor: String
+        switch integration {
+        case .calendar: anchor = "Privacy_Calendars"
+        case .reminders: anchor = "Privacy_Reminders"
+        default: anchor = "Privacy"
+        }
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?\(anchor)") {
+            NSWorkspace.shared.open(url)
+        }
+        feedback = SetupFeedback(kind: .info, message: "Enable \(integration.title) for Apple Apps MCP in System Settings → Privacy & Security, then return here.")
+    }
+
     func requestPermission(for integration: IntegrationID) {
+        // After a denial macOS won't prompt again — send the user to Settings instead.
+        if permissionIsDenied(for: integration) {
+            openPrivacySettings(for: integration)
+            return
+        }
         let eventStore = EKEventStore()
         Task {
             do {
@@ -354,16 +427,14 @@ final class AppStore {
                 case .reminders:
                     granted = try await eventStore.requestFullAccessToReminders()
                 default:
-                    setupOutput = "\(integration.title) asks macOS for Automation permission the first time a tool runs."
+                    feedback = SetupFeedback(kind: .info, message: "\(integration.title) asks macOS for Automation permission the first time a tool runs.")
                 }
-                await MainActor.run {
-                    if let granted {
-                        setPermissionStatus(integration, granted: granted)
-                    }
-                    schedulePermissionRefreshes()
+                if let granted {
+                    setPermissionStatus(integration, granted: granted)
                 }
+                schedulePermissionRefreshes()
             } catch {
-                await MainActor.run { setupOutput = error.localizedDescription }
+                feedback = SetupFeedback(kind: .error, message: error.localizedDescription)
             }
         }
     }
@@ -378,10 +449,10 @@ final class AppStore {
         /usr/bin/tccutil reset \(service.shellEscaped) \(appBundleID.shellEscaped) >/dev/null 2>&1 || true
         /usr/bin/tccutil reset \(service.shellEscaped) \(helperBundleID.shellEscaped) >/dev/null 2>&1 || true
         """
-        runShell("/bin/zsh", ["-lc", command])
+        runShell("/bin/zsh", ["-lc", command], marksOnboardingComplete: false)
         setTrustedGrant(integration, trusted: false)
         setPermissionStatus(integration, granted: false)
-        setupOutput = "\(integration.title) permission was revoked. macOS may take a moment to update System Settings."
+        feedback = SetupFeedback(kind: .info, message: "\(integration.title) permission was revoked. macOS may take a moment to update System Settings.")
         schedulePermissionRefreshes()
     }
 
@@ -452,17 +523,17 @@ final class AppStore {
         let server = serverPath
         switch config.preferredClient {
         case .codexCLI:
-            runShell("/bin/zsh", ["-lc", "codex mcp remove apple-apps >/dev/null 2>&1 || true; codex mcp add apple-apps -- node \(server.shellEscaped)"])
+            runShell("/bin/zsh", ["-lc", "codex mcp remove apple-apps >/dev/null 2>&1 || true; codex mcp add apple-apps -- node \(server.shellEscaped)"],
+                     successMessage: "Registered apple-apps with Codex CLI.")
         case .claudeCLI:
-            runShell("/bin/zsh", ["-lc", "claude mcp remove apple-apps >/dev/null 2>&1 || true; claude mcp add apple-apps -- node \(server.shellEscaped)"])
+            runShell("/bin/zsh", ["-lc", "claude mcp remove apple-apps >/dev/null 2>&1 || true; claude mcp add apple-apps -- node \(server.shellEscaped)"],
+                     successMessage: "Registered apple-apps with Claude Code.")
         case .codexApp:
             writeCodexAppConfig(server: server)
         case .claudeApp:
             writeClaudeDesktopConfig(server: server)
         case .raycast, .manual:
-            setupOutput = """
-            Add this MCP server to \(config.preferredClient.title):
-
+            let json = """
             {
               "mcpServers": {
                 "apple-apps": {
@@ -472,6 +543,7 @@ final class AppStore {
               }
             }
             """
+            feedback = SetupFeedback(kind: .info, message: "Add this MCP server to \(config.preferredClient.title):", code: json)
         }
     }
 
@@ -488,19 +560,19 @@ final class AppStore {
             try FileManager.default.createDirectory(at: configURL.deletingLastPathComponent(), withIntermediateDirectories: true)
             var contents = (try? String(contentsOf: configURL, encoding: .utf8)) ?? ""
             if contents.contains("[mcp_servers.apple-apps]") {
-                setupOutput = "Codex already has the apple-apps server in ~/.codex/config.toml. Restart Codex if it isn't showing up."
+                feedback = SetupFeedback(kind: .info, message: "Codex already has the apple-apps server in ~/.codex/config.toml. Restart Codex if it isn't showing up.")
             } else {
                 if !contents.isEmpty, !contents.hasSuffix("\n\n") {
                     contents += contents.hasSuffix("\n") ? "\n" : "\n\n"
                 }
                 contents += block + "\n"
                 try contents.write(to: configURL, atomically: true, encoding: .utf8)
-                setupOutput = "Added apple-apps to ~/.codex/config.toml. Restart the Codex app to load it."
+                feedback = SetupFeedback(kind: .success, message: "Added apple-apps to ~/.codex/config.toml. Restart the Codex app to load it.")
             }
             config.onboardingComplete = true
             save()
         } catch {
-            setupOutput = "Could not update Codex config: \(error.localizedDescription)"
+            feedback = SetupFeedback(kind: .error, message: "Could not update Codex config: \(error.localizedDescription)")
         }
     }
 
@@ -520,16 +592,16 @@ final class AppStore {
             root["mcpServers"] = servers
             let data = try JSONSerialization.data(withJSONObject: root, options: [.prettyPrinted, .sortedKeys])
             try data.write(to: configURL, options: .atomic)
-            setupOutput = "Added apple-apps to Claude Desktop. Quit and reopen Claude to load it."
+            feedback = SetupFeedback(kind: .success, message: "Added apple-apps to Claude Desktop. Quit and reopen Claude to load it.")
             config.onboardingComplete = true
             save()
         } catch {
-            setupOutput = "Could not update Claude Desktop config: \(error.localizedDescription)"
+            feedback = SetupFeedback(kind: .error, message: "Could not update Claude Desktop config: \(error.localizedDescription)")
         }
     }
 
     func checkForUpdates() {
-        setupOutput = "Checking GitHub Releases..."
+        feedback = SetupFeedback(kind: .progress, message: "Checking GitHub Releases…")
         Task {
             do {
                 let releaseURL = URL(string: "https://api.github.com/repos/0xatrilla/Apple-MCP/releases/latest")!
@@ -549,15 +621,11 @@ final class AppStore {
                 let currentVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.0.0"
                 let latestVersion = release.tagName.trimmingCharacters(in: CharacterSet(charactersIn: "vV"))
                 if compareVersions(latestVersion, currentVersion) <= 0 {
-                    await MainActor.run {
-                        setupOutput = "Apple MCP is up to date. Current: \(currentVersion). Latest: \(release.tagName)."
-                    }
+                    feedback = SetupFeedback(kind: .success, message: "Apple MCP is up to date. Current: \(currentVersion). Latest: \(release.tagName).")
                     return
                 }
 
-                await MainActor.run {
-                    setupOutput = "Downloading \(asset.name)..."
-                }
+                feedback = SetupFeedback(kind: .progress, message: "Downloading \(asset.name)…")
 
                 let (temporaryURL, _) = try await URLSession.shared.download(from: asset.browserDownloadURL)
                 let downloadsURL = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
@@ -568,14 +636,10 @@ final class AppStore {
                 }
                 try FileManager.default.moveItem(at: temporaryURL, to: destinationURL)
 
-                await MainActor.run {
-                    setupOutput = "Downloaded \(asset.name) to Downloads. Opening installer..."
-                    NSWorkspace.shared.open(destinationURL)
-                }
+                feedback = SetupFeedback(kind: .success, message: "Downloaded \(asset.name) to Downloads. Opening installer…")
+                NSWorkspace.shared.open(destinationURL)
             } catch {
-                await MainActor.run {
-                    setupOutput = "Update check failed: \(error.localizedDescription)"
-                }
+                feedback = SetupFeedback(kind: .error, message: "Update check failed: \(error.localizedDescription)")
             }
         }
     }
@@ -594,7 +658,7 @@ final class AppStore {
         return 0
     }
 
-    private func runShell(_ executable: String, _ arguments: [String]) {
+    private func runShell(_ executable: String, _ arguments: [String], successMessage: String? = nil, marksOnboardingComplete: Bool = true) {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = arguments
@@ -605,13 +669,20 @@ final class AppStore {
             try process.run()
             process.waitUntilExit()
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            setupOutput = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let output = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             if process.terminationStatus == 0 {
-                config.onboardingComplete = true
-                save()
+                if let successMessage {
+                    feedback = SetupFeedback(kind: .success, message: successMessage, code: output.isEmpty ? nil : output)
+                }
+                if marksOnboardingComplete {
+                    config.onboardingComplete = true
+                    save()
+                }
+            } else if !output.isEmpty {
+                feedback = SetupFeedback(kind: .error, message: output)
             }
         } catch {
-            setupOutput = error.localizedDescription
+            feedback = SetupFeedback(kind: .error, message: error.localizedDescription)
         }
     }
 
@@ -676,6 +747,8 @@ final class EventKitBridge {
     private let store = EKEventStore()
     private var listener: NWListener?
     private let port: NWEndpoint.Port = 17373
+    /// Reports whether the loopback listener is ready (true) or stopped/failed (false).
+    var onStateChange: ((Bool) -> Void)?
     private let encoder: JSONEncoder = {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -693,7 +766,22 @@ final class EventKitBridge {
         do {
             let parameters = NWParameters.tcp
             parameters.allowLocalEndpointReuse = true
-            let listener = try NWListener(using: parameters, on: port)
+            // Bind to loopback only. Without this the listener accepts connections
+            // from any interface, exposing EventKit access to the local network.
+            parameters.requiredLocalEndpoint = NWEndpoint.hostPort(host: "127.0.0.1", port: port)
+            let listener = try NWListener(using: parameters)
+            listener.stateUpdateHandler = { [weak self] state in
+                Task { @MainActor in
+                    switch state {
+                    case .ready:
+                        self?.onStateChange?(true)
+                    case .failed, .cancelled:
+                        self?.onStateChange?(false)
+                    default:
+                        break
+                    }
+                }
+            }
             listener.newConnectionHandler = { [weak self] connection in
                 Task { @MainActor in
                     self?.handle(connection)
@@ -703,6 +791,7 @@ final class EventKitBridge {
             self.listener = listener
         } catch {
             print("EventKit bridge failed to start: \(error.localizedDescription)")
+            onStateChange?(false)
         }
     }
 
@@ -788,7 +877,7 @@ final class EventKitBridge {
         let predicate = store.predicateForEvents(withStart: start, end: end, calendars: nil)
         return store.events(matching: predicate).map {
             BridgeEventRecord(
-                id: $0.eventIdentifier,
+                id: $0.eventIdentifier ?? "",
                 title: $0.title ?? "",
                 start: $0.startDate,
                 end: $0.endDate,
@@ -807,7 +896,7 @@ final class EventKitBridge {
         event.notes = input.notes
         event.calendar = input.calendarId.flatMap { store.calendar(withIdentifier: $0) } ?? store.defaultCalendarForNewEvents
         try store.save(event, span: .thisEvent, commit: true)
-        return BridgeEventRecord(id: event.eventIdentifier, title: event.title, start: event.startDate, end: event.endDate, calendar: event.calendar.title, notes: event.notes)
+        return BridgeEventRecord(id: event.eventIdentifier ?? "", title: event.title ?? "", start: event.startDate, end: event.endDate, calendar: event.calendar.title, notes: event.notes)
     }
 
     private func listReminders(_ input: BridgeReminderListInput) async throws -> [BridgeReminderRecord] {
@@ -821,7 +910,7 @@ final class EventKitBridge {
                 continuation.resume(returning: (reminders ?? []).map {
                     BridgeReminderRecord(
                         id: $0.calendarItemIdentifier,
-                        title: $0.title,
+                        title: $0.title ?? "",
                         calendar: $0.calendar.title,
                         notes: $0.notes,
                         dueDate: $0.dueDateComponents.flatMap { Calendar.current.date(from: $0) },
@@ -842,7 +931,7 @@ final class EventKitBridge {
             reminder.dueDateComponents = Calendar.current.dateComponents([.year, .month, .day, .hour, .minute], from: dueDate)
         }
         try store.save(reminder, commit: true)
-        return BridgeReminderRecord(id: reminder.calendarItemIdentifier, title: reminder.title, calendar: reminder.calendar.title, notes: reminder.notes, dueDate: input.dueDate, completed: reminder.isCompleted)
+        return BridgeReminderRecord(id: reminder.calendarItemIdentifier, title: reminder.title ?? "", calendar: reminder.calendar.title, notes: reminder.notes, dueDate: input.dueDate, completed: reminder.isCompleted)
     }
 
     private func completeReminder(_ input: BridgeReminderCompleteInput) throws -> [String: String] {
@@ -913,6 +1002,59 @@ extension String {
     }
 }
 
+// MARK: - Settings window
+
+/// Hosts the settings UI in a programmatically-created `NSWindow` with
+/// `.fullSizeContentView`, which is what lets macOS 26 render the Liquid Glass
+/// window chrome (rounded corners, translucent title bar). A SwiftUI `Settings`
+/// scene cannot expose the style mask, so we own the window directly.
+@MainActor
+final class SettingsWindowController: NSWindowController, NSWindowDelegate {
+    private static var shared: SettingsWindowController?
+
+    static func show(store: AppStore) {
+        if let existing = shared {
+            existing.showWindow(nil)
+            existing.window?.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+        let controller = SettingsWindowController(store: store)
+        shared = controller
+        controller.showWindow(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    init(store: AppStore) {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 540, height: 500),
+            styleMask: [.titled, .closable, .miniaturizable, .fullSizeContentView],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "Settings"
+        window.titlebarAppearsTransparent = true
+        window.toolbarStyle = .unified
+        window.isReleasedWhenClosed = false
+        window.setContentSize(NSSize(width: 540, height: 500))
+        window.center()
+        window.setFrameAutosaveName("AppleAppsMCPSettingsWindow")
+
+        let host = NSHostingController(rootView: SettingsView().environment(store))
+        window.contentViewController = host
+
+        super.init(window: window)
+        window.delegate = self
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+
+    func windowWillClose(_ notification: Notification) {
+        Self.shared = nil
+    }
+}
+
 @main
 struct AppleAppsControlApp: App {
     @State private var store = AppStore()
@@ -931,18 +1073,17 @@ struct AppleAppsControlApp: App {
         }
         .windowToolbarStyle(.unified(showsTitle: false))
         .commands {
+            CommandGroup(replacing: .appSettings) {
+                Button("Settings…") {
+                    SettingsWindowController.show(store: store)
+                }
+                .keyboardShortcut(",", modifiers: .command)
+            }
             CommandGroup(after: .appInfo) {
                 Button("Check for Updates...") {
                     store.checkForUpdates()
                 }
             }
-        }
-
-        Settings {
-            SettingsView()
-                .environment(store)
-                .frame(width: 560)
-                .padding(24)
         }
 
         MenuBarExtra("Apple Apps MCP", systemImage: "bolt.horizontal.circle") {
@@ -1018,6 +1159,104 @@ extension View {
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                     .strokeBorder(Color(nsColor: .separatorColor).opacity(0.6), lineWidth: 1)
             )
+    }
+}
+
+// MARK: - Status pill (the recurring identity anchor)
+
+/// A small Liquid Glass capsule with a glowing status dot. Used identically in
+/// the sidebar header, the menu bar, and Settings so the app reads as one
+/// coherent "control room" surface — this is the element you'd recognize with
+/// the logo cropped out.
+struct StatusPill: View {
+    let text: String
+    let color: Color
+    var help: String?
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Circle()
+                .fill(color)
+                .frame(width: 6, height: 6)
+                .shadow(color: color.opacity(0.7), radius: 3)
+                .shadow(color: color.opacity(0.35), radius: 6)
+            Text(text)
+                .font(.caption.weight(.medium))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+        }
+        .padding(.horizontal, 9)
+        .padding(.vertical, 4)
+        .glassEffect(.regular, in: .capsule)
+        .help(help ?? text)
+    }
+}
+
+// MARK: - Setup feedback
+
+/// Typed banner for setup results: colored icon + message, with an optional
+/// copyable monospace code block (used for JSON config and shell output).
+struct SetupFeedbackView: View {
+    let feedback: SetupFeedback
+    var compact = false
+    @State private var copied = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: compact ? 6 : 10) {
+            HStack(alignment: .top, spacing: 9) {
+                Image(systemName: feedback.kind.symbol)
+                    .font(.system(size: compact ? 12 : 14, weight: .semibold))
+                    .foregroundStyle(feedback.kind.tint)
+                    .symbolEffect(.pulse, isActive: feedback.kind == .progress)
+                Text(feedback.message)
+                    .font(compact ? .caption2 : .callout)
+                    .foregroundStyle(.primary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+                if feedback.code == nil, !compact {
+                    copyButton(text: feedback.message)
+                }
+            }
+
+            if let code = feedback.code {
+                ScrollView {
+                    Text(code)
+                        .font(.system(compact ? .caption2 : .caption, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(10)
+                }
+                .frame(maxHeight: compact ? 90 : 150)
+                .background(.fill.quaternary, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .overlay(alignment: .topTrailing) {
+                    copyButton(text: code).padding(6)
+                }
+            }
+        }
+        .padding(compact ? 10 : 14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(feedback.kind.tint.opacity(0.08), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(feedback.kind.tint.opacity(0.25), lineWidth: 1)
+        )
+    }
+
+    private func copyButton(text: String) -> some View {
+        Button {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(text, forType: .string)
+            withAnimation { copied = true }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) { withAnimation { copied = false } }
+        } label: {
+            Label(copied ? "Copied" : "Copy", systemImage: copied ? "checkmark" : "doc.on.doc")
+                .font(.caption2.weight(.semibold))
+                .labelStyle(.titleAndIcon)
+        }
+        .buttonStyle(.borderless)
+        .foregroundStyle(.secondary)
+        .help("Copy to clipboard")
     }
 }
 
@@ -1129,17 +1368,14 @@ struct BrandHeader: View {
         HStack(spacing: 12) {
             AppBrandIcon(size: 38)
 
-            VStack(alignment: .leading, spacing: 1) {
+            VStack(alignment: .leading, spacing: 4) {
                 Text("Apple Apps MCP")
                     .font(.headline)
-                HStack(spacing: 5) {
-                    Circle()
-                        .fill(.green)
-                        .frame(width: 6, height: 6)
-                    Text("\(store.totalEnabledTools) tools active")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
+                StatusPill(
+                    text: store.serverStatusText,
+                    color: store.serverStatusColor,
+                    help: store.bridgeRunning ? "MCP bridge is listening on 127.0.0.1:17373" : "MCP bridge is not running"
+                )
             }
             Spacer(minLength: 0)
         }
@@ -1193,6 +1429,7 @@ struct IntegrationSidebarRow: View {
             .labelsHidden()
             .toggleStyle(.switch)
             .controlSize(.mini)
+            .accessibilityLabel("\(integration.title) tools")
         }
         .padding(.vertical, 4)
     }
@@ -1282,11 +1519,13 @@ struct IntegrationDetailView: View {
                     Button(permissionActionTitle) {
                         if store.permissionIsAllowed(for: integration) {
                             store.revokePermission(for: integration)
+                        } else if store.permissionIsDenied(for: integration) {
+                            store.openPrivacySettings(for: integration)
                         } else {
                             store.requestPermission(for: integration)
                         }
                     }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(.glassProminent)
                     .tint(store.permissionIsAllowed(for: integration) ? .red : .accentColor)
                 }
             }
@@ -1300,7 +1539,9 @@ struct IntegrationDetailView: View {
     }
 
     private var permissionActionTitle: String {
-        store.permissionIsAllowed(for: integration) ? "Revoke Access" : "Request Access"
+        if store.permissionIsAllowed(for: integration) { return "Revoke Access" }
+        if store.permissionIsDenied(for: integration) { return "Open System Settings" }
+        return "Request Access"
     }
 
     private var permissionDetail: String {
@@ -1453,7 +1694,7 @@ struct ClientGrid: View {
                           systemImage: "bolt.badge.checkmark")
                         .padding(.horizontal, 4)
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.glassProminent)
                 .controlSize(.large)
 
                 Text(store.config.preferredClient.tagline)
@@ -1462,19 +1703,12 @@ struct ClientGrid: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            if !store.setupOutput.isEmpty {
-                ScrollView {
-                    Text(store.setupOutput)
-                        .font(.system(.caption, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(12)
-                }
-                .frame(maxHeight: 160)
-                .surfaceCard()
+            if let feedback = store.feedback {
+                SetupFeedbackView(feedback: feedback)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
+        .animation(.smooth(duration: 0.25), value: store.feedback)
     }
 }
 
@@ -1710,17 +1944,63 @@ struct RaycastGlyph: View {
 // MARK: - Settings scene
 
 struct SettingsView: View {
+    @Environment(AppStore.self) private var store
+
+    private var appVersion: String {
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "—"
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text("Connection")
-                    .font(.title2.weight(.semibold))
-                Text("Pick the AI app to register the local MCP server with.")
-                    .font(.subheadline)
+        @Bindable var store = store
+        Form {
+            Section("Connection") {
+                Picker("AI app", selection: $store.config.preferredClient) {
+                    ForEach(PreferredClient.allCases) { client in
+                        Text(client.title).tag(client)
+                    }
+                }
+                .pickerStyle(.menu)
+                .onChange(of: store.config.preferredClient) { store.save() }
+
+                LabeledContent("Registration") {
+                    Button(store.config.preferredClient.canInstall ? "Install MCP Config" : "Show Config") {
+                        store.installPreferredClient()
+                    }
+                    .controlSize(.small)
+                }
+
+                Text(store.config.preferredClient.tagline)
+                    .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            ClientGrid()
+
+            Section("MCP server") {
+                LabeledContent("Status") {
+                    StatusPill(text: store.bridgeRunning ? "Running" : "Not running",
+                               color: store.serverStatusColor)
+                }
+                LabeledContent("Address", value: "127.0.0.1:17373")
+                LabeledContent("Tools enabled", value: "\(store.totalEnabledTools)")
+            }
+
+            if let feedback = store.feedback {
+                Section {
+                    SetupFeedbackView(feedback: feedback)
+                        .listRowInsets(EdgeInsets())
+                        .listRowBackground(Color.clear)
+                }
+            }
+
+            Section("About") {
+                LabeledContent("Version", value: appVersion)
+                Button("Check for Updates…") { store.checkForUpdates() }
+                    .controlSize(.small)
+            }
         }
+        .formStyle(.grouped)
+        .scrollContentBackground(.hidden)
+        .contentMargins(.top, 12, for: .scrollContent)
+        .animation(.smooth(duration: 0.25), value: store.feedback)
     }
 }
 
@@ -1785,7 +2065,7 @@ struct OnboardingView: View {
                 Button(action: back) {
                     Label("Back", systemImage: "chevron.left")
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(.glass)
                 .controlSize(.large)
             }
             Spacer()
@@ -1795,7 +2075,7 @@ struct OnboardingView: View {
             Button(action: primaryAction) {
                 Text(primaryTitle).frame(minWidth: 112)
             }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(.glassProminent)
             .controlSize(.large)
             .keyboardShortcut(.defaultAction)
         }
@@ -1995,6 +2275,7 @@ struct OnboardingCapabilityRow: View {
             ))
             .labelsHidden()
             .toggleStyle(.switch)
+            .accessibilityLabel("\(integration.title) tools")
         }
         .padding(14)
         .background(enabled ? Color(nsColor: .controlBackgroundColor).opacity(0.72) : Color(nsColor: .controlBackgroundColor).opacity(0.36),
@@ -2037,88 +2318,6 @@ struct PermissionsStep: View {
     }
 }
 
-/*
-struct LegacyOnboardingCapabilityRows: View {
-    var body: some View {
-        ScrollView {
-            VStack(spacing: 8) {
-                    ForEach(IntegrationID.allCases) { integration in
-                        OnboardingCapabilityRow(integration: integration)
-                    }
-                }
-                .padding(.horizontal, 22)
-                .padding(.bottom, 8)
-            }
-        }
-        .padding(.top, 4)
-    }
-}
-
-struct LegacyOnboardingCapabilityRow: View {
-    @Environment(AppStore.self) private var store
-    let integration: IntegrationID
-
-    var body: some View {
-        let enabled = store.config.integrations[integration] ?? true
-        HStack(spacing: 12) {
-            MacAppIconView(bundleIdentifier: integration.bundleIdentifier, fallbackSymbol: integration.symbol)
-                .frame(width: 38, height: 38)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(integration.title).font(.headline)
-                Text(integration.tagline)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            Spacer(minLength: 0)
-            Toggle("", isOn: Binding(
-                get: { enabled },
-                set: { store.setEnabled(integration, enabled: $0) }
-            ))
-            .labelsHidden()
-            .toggleStyle(.switch)
-        }
-        .padding(12)
-        .surfaceCard()
-    }
-}
-
-struct LegacyPermissionsStep: View {
-    @Environment(AppStore.self) private var store
-
-    var body: some View {
-        VStack(spacing: 12) {
-            StepHeader(title: "Grant Permissions",
-                       subtitle: "Calendar and Reminders use native macOS access. Other apps prompt on first use.")
-            ScrollView {
-                VStack(spacing: 8) {
-                    OnboardingPermissionRow(title: "Calendar", status: store.calendarPermission, icon: "calendar") {
-                        store.requestPermission(for: .calendar)
-                    }
-                    OnboardingPermissionRow(title: "Reminders", status: store.remindersPermission, icon: "checklist") {
-                        store.requestPermission(for: .reminders)
-                    }
-                    HStack(spacing: 10) {
-                        Image(systemName: "info.circle").foregroundStyle(.secondary)
-                        Text("Notes, Mail, Music, and Shortcuts request Automation access automatically the first time a tool runs.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                        Spacer(minLength: 0)
-                    }
-                    .padding(12)
-                    .surfaceCard()
-                }
-                .padding(.horizontal, 22)
-                .padding(.bottom, 8)
-            }
-        }
-        .padding(.top, 4)
-        .task { store.refreshPermissions() }
-    }
-}
-*/
-
 struct OnboardingPermissionRow: View {
     let title: String
     let status: String
@@ -2126,15 +2325,17 @@ struct OnboardingPermissionRow: View {
     let request: () -> Void
 
     private var granted: Bool { status == "Allowed" }
+    private var denied: Bool { status == "Denied" || status == "Restricted" }
+    private var accent: Color { granted ? .green : (denied ? .red : .orange) }
 
     var body: some View {
         HStack(spacing: 12) {
             ZStack {
                 RoundedRectangle(cornerRadius: 9, style: .continuous)
-                    .fill((granted ? Color.green : Color.orange).opacity(0.15))
+                    .fill(accent.opacity(0.15))
                 Image(systemName: icon)
                     .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(granted ? .green : .orange)
+                    .foregroundStyle(accent)
             }
             .frame(width: 38, height: 38)
             VStack(alignment: .leading, spacing: 2) {
@@ -2147,8 +2348,8 @@ struct OnboardingPermissionRow: View {
                     .foregroundStyle(.green)
                     .font(.title3)
             } else {
-                Button("Allow", action: request)
-                    .buttonStyle(.borderedProminent)
+                Button(denied ? "Settings" : "Allow", action: request)
+                    .buttonStyle(.glassProminent)
                     .controlSize(.small)
             }
         }
@@ -2181,23 +2382,16 @@ struct ConnectStep: View {
                     Label(store.config.preferredClient.canInstall ? "Install MCP Config" : "Show Config",
                           systemImage: "bolt.badge.checkmark")
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.glassProminent)
                 .controlSize(.large)
 
-                if !store.setupOutput.isEmpty {
-                    ScrollView {
-                        Text(store.setupOutput)
-                            .font(.system(.caption2, design: .monospaced))
-                            .foregroundStyle(.secondary)
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(10)
-                    }
-                    .frame(maxHeight: 90)
-                    .surfaceCard()
-                    .padding(.horizontal, 44)
+                if let feedback = store.feedback {
+                    SetupFeedbackView(feedback: feedback)
+                        .padding(.horizontal, 44)
+                        .transition(.opacity)
                 }
             }
+            .animation(.smooth(duration: 0.25), value: store.feedback)
         }
         .padding(.top, 26)
     }
@@ -2246,13 +2440,13 @@ struct MenuBarPanel: View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 11) {
                 AppBrandIcon(size: 34)
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: 4) {
                     Text("Apple Apps MCP").font(.headline)
-                    HStack(spacing: 5) {
-                        Circle().fill(.green).frame(width: 6, height: 6)
-                        Text("\(store.totalEnabledTools) tools active")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
+                    StatusPill(
+                        text: store.serverStatusText,
+                        color: store.serverStatusColor,
+                        help: store.bridgeRunning ? "MCP bridge is listening on 127.0.0.1:17373" : "MCP bridge is not running"
+                    )
                 }
                 Spacer(minLength: 0)
             }
@@ -2282,6 +2476,9 @@ struct MenuBarPanel: View {
 
             VStack(spacing: 1) {
                 MenuActionButton(title: "Open Apple Apps MCP", icon: "macwindow") { openMain() }
+                MenuActionButton(title: "Settings…", icon: "gearshape") {
+                    SettingsWindowController.show(store: store)
+                }
                 MenuActionButton(title: "Install MCP Config", icon: "bolt.badge.checkmark") { store.installPreferredClient() }
                 MenuActionButton(title: "Refresh Permissions", icon: "arrow.clockwise") { store.refreshPermissions() }
                 MenuActionButton(title: "Check for Updates", icon: "arrow.down.circle") { store.checkForUpdates() }
@@ -2289,14 +2486,10 @@ struct MenuBarPanel: View {
                     store.restartOnboarding()
                     openMain()
                 }
-                if !store.setupOutput.isEmpty {
-                    Text(store.setupOutput)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(3)
-                        .fixedSize(horizontal: false, vertical: true)
+                if let feedback = store.feedback {
+                    SetupFeedbackView(feedback: feedback, compact: true)
                         .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
+                        .padding(.vertical, 4)
                 }
                 Divider().padding(.vertical, 3).padding(.horizontal, 6)
                 MenuActionButton(title: "Quit", icon: "power", role: .destructive) { NSApp.terminate(nil) }
@@ -2348,6 +2541,7 @@ struct MenuToggleRow: View {
             .labelsHidden()
             .toggleStyle(.switch)
             .controlSize(.mini)
+            .accessibilityLabel("\(integration.title) tools")
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 5)
