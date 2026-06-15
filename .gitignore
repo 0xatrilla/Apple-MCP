@@ -8,3 +8,11 @@ tmp/
 Assets/
 memory/
 .cursor/
+
+# Code-signing / notarization material — never commit private keys
+*.p12
+*.key
+*.cer
+*.csr
+*.pem
+*.mobileprovision

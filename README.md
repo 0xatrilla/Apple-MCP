@@ -42,6 +42,12 @@ Apple MCP exposes these tools:
 
 Risky tools require `confirm: true` and a short `reason`.
 
+## Download
+
+Prebuilt releases are available on the [Releases page](https://github.com/0xatrilla/Apple-MCP/releases).
+
+The app is signed with a Developer ID certificate and notarized by Apple, so it opens normally with no Gatekeeper warnings — just drag **Apple MCP** to your Applications folder.
+
 ## Requirements
 
 - macOS 26 or newer
