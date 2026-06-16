@@ -1013,16 +1013,15 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private static var shared: SettingsWindowController?
 
     static func show(store: AppStore) {
+        AppDelegate.activateForWindow()
         if let existing = shared {
             existing.showWindow(nil)
             existing.window?.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
             return
         }
         let controller = SettingsWindowController(store: store)
         shared = controller
         controller.showWindow(nil)
-        NSApp.activate(ignoringOtherApps: true)
     }
 
     init(store: AppStore) {
@@ -1055,8 +1054,52 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     }
 }
 
+/// Drives the app's Dock presence. The app is really a menu bar agent: closing
+/// the main window should leave it running in the menu bar, not sitting in the
+/// Dock. We start as a regular app (so the window and Dock icon appear on
+/// launch), then drop to `.accessory` once no ordinary window is visible, and
+/// pop back to `.regular` whenever a window is reopened.
+@MainActor
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(windowWillClose(_:)),
+            name: NSWindow.willCloseNotification,
+            object: nil
+        )
+    }
+
+    /// Keep the process alive when the user closes the last window — it stays
+    /// active in the menu bar.
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        false
+    }
+
+    @objc private func windowWillClose(_ notification: Notification) {
+        // Re-evaluate after the window has actually gone away.
+        DispatchQueue.main.async { Self.updateDockVisibility() }
+    }
+
+    /// Show the Dock icon and bring the app forward — call before opening a window.
+    static func activateForWindow() {
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    /// Drop the Dock icon when only the menu bar remains; keep it while any
+    /// ordinary (titled) window is still on screen.
+    static func updateDockVisibility() {
+        let hasVisibleWindow = NSApp.windows.contains { window in
+            window.isVisible && window.styleMask.contains(.titled)
+        }
+        NSApp.setActivationPolicy(hasVisibleWindow ? .regular : .accessory)
+    }
+}
+
 @main
 struct AppleAppsControlApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var store = AppStore()
     @Environment(\.scenePhase) private var scenePhase
 
@@ -2501,8 +2544,8 @@ struct MenuBarPanel: View {
     }
 
     private func openMain() {
+        AppDelegate.activateForWindow()
         openWindow(id: "main")
-        NSApp.activate(ignoringOtherApps: true)
     }
 }
 
