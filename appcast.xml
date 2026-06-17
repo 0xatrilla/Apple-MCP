@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" xmlns:dc="http://purl.org/dc/elements/1.1/">
+  <channel>
+    <title>Apple MCP</title>
+    <description>Most recent changes for Apple MCP.</description>
+    <language>en</language>
+    <!-- APPCAST:INSERT -->
+    <item>
+      <title>Version 0.2.5</title>
+      <pubDate>Wed, 17 Jun 2026 10:01:07 +0000</pubDate>
+      <sparkle:version>0.2.5</sparkle:version>
+      <sparkle:shortVersionString>0.2.5</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <enclosure url="https://github.com/0xatrilla/Apple-MCP/releases/download/v0.2.5/Apple-MCP-0.2.5.dmg" type="application/octet-stream" sparkle:edSignature="/vEG5XVKflATxwVPQ9WkGObZXSFaftne/9H9V/Ga5pNhSWXj4H82a69FkM+LzDvf6C8ciS6u7VlF9XR3UdGuBQ==" length="25358918" />
+    </item>
+  </channel>
+</rss>

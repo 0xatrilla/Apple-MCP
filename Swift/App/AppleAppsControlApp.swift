@@ -3,28 +3,6 @@ import EventKit
 import Network
 import SwiftUI
 
-struct GitHubRelease: Decodable {
-    let tagName: String
-    let htmlURL: URL
-    let assets: [GitHubReleaseAsset]
-
-    enum CodingKeys: String, CodingKey {
-        case tagName = "tag_name"
-        case htmlURL = "html_url"
-        case assets
-    }
-}
-
-struct GitHubReleaseAsset: Decodable {
-    let name: String
-    let browserDownloadURL: URL
-
-    enum CodingKeys: String, CodingKey {
-        case name
-        case browserDownloadURL = "browser_download_url"
-    }
-}
-
 enum IntegrationID: String, CaseIterable, Identifiable, Codable {
     case calendar
     case reminders
@@ -487,12 +465,16 @@ final class AppStore {
             trusted = true
             UserDefaults.standard.set(true, forKey: defaultsKey)
             return "Allowed"
-        case "Denied", "Restricted":
-            trusted = false
-            UserDefaults.standard.set(false, forKey: defaultsKey)
-            return polled
         default:
-            return trusted ? "Allowed" : polled
+            // Never claim "Allowed" when the OS reports anything else. A stale
+            // trusted-grant cache previously masked a revoked/notDetermined
+            // state, so the UI said Allowed while every actual call was denied.
+            // Clear the cache and surface the real status.
+            if trusted {
+                trusted = false
+                UserDefaults.standard.set(false, forKey: defaultsKey)
+            }
+            return polled
         }
     }
 
@@ -600,62 +582,9 @@ final class AppStore {
         }
     }
 
+    /// Hand off to Sparkle, which downloads, installs, and relaunches in place.
     func checkForUpdates() {
-        feedback = SetupFeedback(kind: .progress, message: "Checking GitHub Releases…")
-        Task {
-            do {
-                let releaseURL = URL(string: "https://api.github.com/repos/0xatrilla/Apple-MCP/releases/latest")!
-                var request = URLRequest(url: releaseURL)
-                request.setValue("Apple-MCP-Updater", forHTTPHeaderField: "User-Agent")
-
-                let (data, response) = try await URLSession.shared.data(for: request)
-                guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
-                    throw URLError(.badServerResponse)
-                }
-
-                let release = try JSONDecoder().decode(GitHubRelease.self, from: data)
-                guard let asset = release.assets.first(where: { $0.name.lowercased().hasSuffix(".dmg") }) else {
-                    throw NSError(domain: "AppleMCPUpdater", code: 1, userInfo: [NSLocalizedDescriptionKey: "Latest release has no DMG asset."])
-                }
-
-                let currentVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.0.0"
-                let latestVersion = release.tagName.trimmingCharacters(in: CharacterSet(charactersIn: "vV"))
-                if compareVersions(latestVersion, currentVersion) <= 0 {
-                    feedback = SetupFeedback(kind: .success, message: "Apple MCP is up to date. Current: \(currentVersion). Latest: \(release.tagName).")
-                    return
-                }
-
-                feedback = SetupFeedback(kind: .progress, message: "Downloading \(asset.name)…")
-
-                let (temporaryURL, _) = try await URLSession.shared.download(from: asset.browserDownloadURL)
-                let downloadsURL = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
-                    ?? FileManager.default.homeDirectoryForCurrentUser
-                let destinationURL = downloadsURL.appendingPathComponent(asset.name)
-                if FileManager.default.fileExists(atPath: destinationURL.path) {
-                    try FileManager.default.removeItem(at: destinationURL)
-                }
-                try FileManager.default.moveItem(at: temporaryURL, to: destinationURL)
-
-                feedback = SetupFeedback(kind: .success, message: "Downloaded \(asset.name) to Downloads. Opening installer…")
-                NSWorkspace.shared.open(destinationURL)
-            } catch {
-                feedback = SetupFeedback(kind: .error, message: "Update check failed: \(error.localizedDescription)")
-            }
-        }
-    }
-
-    private func compareVersions(_ lhs: String, _ rhs: String) -> Int {
-        let left = lhs.split(separator: ".").map { Int($0) ?? 0 }
-        let right = rhs.split(separator: ".").map { Int($0) ?? 0 }
-        let count = max(left.count, right.count)
-        for index in 0..<count {
-            let l = index < left.count ? left[index] : 0
-            let r = index < right.count ? right[index] : 0
-            if l != r {
-                return l < r ? -1 : 1
-            }
-        }
-        return 0
+        UpdaterManager.shared.checkForUpdates()
     }
 
     private func runShell(_ executable: String, _ arguments: [String], successMessage: String? = nil, marksOnboardingComplete: Bool = true) {
@@ -995,7 +924,7 @@ enum BridgeError: LocalizedError {
         switch self {
         case .invalidRequest: "Invalid bridge request"
         case .unknownCommand(let command): "Unknown bridge command: \(command)"
-        case .notAuthorized(let target): "\(target) access is not authorized"
+        case .notAuthorized(let target): "\(target) access is not authorized. Open the Apple MCP app, go to \(target), and grant access — then try again."
         case .notFound(let item): "\(item) was not found"
         }
     }
@@ -1066,6 +995,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 /// pop back to `.regular` whenever a window is reopened.
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    // Holding the shared updater here ensures its SPUStandardUpdaterController is
+    // created before launch finishes, as Sparkle requires.
+    private let updater = UpdaterManager.shared
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         NotificationCenter.default.addObserver(
             self,
@@ -1073,6 +1006,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             name: NSWindow.willCloseNotification,
             object: nil
         )
+        updater.start()
     }
 
     /// Keep the process alive when the user closes the last window — it stays

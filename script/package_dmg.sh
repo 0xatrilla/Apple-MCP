@@ -30,6 +30,13 @@ cp "$BUILD_BIN/$EXECUTABLE_NAME" "$MACOS/$EXECUTABLE_NAME"
 cp "$BUILD_BIN/$HELPER_NAME" "$MACOS/$HELPER_NAME"
 chmod +x "$MACOS/$EXECUTABLE_NAME" "$MACOS/$HELPER_NAME"
 
+# Embed Sparkle.framework so the app can update itself in place. The executable
+# is linked with an @executable_path/../Frameworks rpath (see Package.swift).
+FRAMEWORKS="$CONTENTS/Frameworks"
+SPARKLE_FRAMEWORK="$BUILD_BIN/Sparkle.framework"
+mkdir -p "$FRAMEWORKS"
+cp -R "$SPARKLE_FRAMEWORK" "$FRAMEWORKS/Sparkle.framework"
+
 cp "$ROOT/Swift/App/Resources/AppIcon.icns" "$RESOURCES/AppIcon.icns"
 mkdir -p "$RESOURCES/dist"
 cp -R "$ROOT/dist/"{adapters,config,mcp,services} "$RESOURCES/dist/"
@@ -76,6 +83,12 @@ cat > "$CONTENTS/Info.plist" <<PLIST
   <string>Apple MCP needs reminders access to expose Reminders tools to your selected AI apps.</string>
   <key>NSAppleEventsUsageDescription</key>
   <string>Apple MCP uses Automation to control Apple apps you enable, including Notes, Mail, Music, and Shortcuts.</string>
+  <key>SUFeedURL</key>
+  <string>https://raw.githubusercontent.com/0xatrilla/Apple-MCP/main/appcast.xml</string>
+  <key>SUPublicEDKey</key>
+  <string>yQ8JuXIdeLXzJuAoI2pqEWYydkBCnZ/8BUTGlXqkfN8=</string>
+  <key>SUEnableAutomaticChecks</key>
+  <true/>
 </dict>
 </plist>
 PLIST
@@ -100,6 +113,23 @@ if [[ -n "$SIGN_IDENTITY" ]]; then
       codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$f"
     fi
   done < <(find "$RESOURCES" -type f \( -name "*.node" -o -name "*.dylib" -o -perm -u+x \) -print0)
+
+  # Sign Sparkle.framework inside-out: XPC services, helper tools, the nested
+  # Updater.app, then the framework bundle itself. These ship unsigned-by-us and
+  # must carry our Team ID for notarization to accept the app.
+  SPARKLE_V="$FRAMEWORKS/Sparkle.framework/Versions/B"
+  for component in \
+    "$SPARKLE_V/XPCServices/Installer.xpc" \
+    "$SPARKLE_V/XPCServices/Downloader.xpc" \
+    "$SPARKLE_V/Autoupdate" \
+    "$SPARKLE_V/Updater.app"; do
+    if [[ -e "$component" ]]; then
+      codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$component"
+    else
+      echo "WARNING: expected Sparkle component missing: $component" >&2
+    fi
+  done
+  codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$FRAMEWORKS/Sparkle.framework"
 
   # Sign inner executables, then the bundle (inside-out).
   codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$MACOS/$HELPER_NAME"
@@ -171,6 +201,45 @@ if [[ "$NOTARIZE" == "1" ]]; then
   xcrun stapler staple "$DMG_PATH"
   xcrun stapler validate "$DMG_PATH"
   echo "Notarized & stapled: $DMG_PATH"
+fi
+
+# ---------------------------------------------------------------------------
+# Sparkle appcast
+#
+# EdDSA-sign the DMG (private key lives in the login keychain; generated once
+# with Sparkle's generate_keys) and prepend a fresh <item> to appcast.xml so
+# shipped apps see the update. Commit appcast.xml after the GitHub release.
+# ---------------------------------------------------------------------------
+SIGN_UPDATE="$ROOT/.build/artifacts/sparkle/Sparkle/bin/sign_update"
+APPCAST="$ROOT/appcast.xml"
+if [[ -x "$SIGN_UPDATE" && -f "$APPCAST" ]]; then
+  echo "Updating appcast..."
+  SIG_LINE="$("$SIGN_UPDATE" "$DMG_PATH")"  # sparkle:edSignature="..." sparkle:length="..."
+  PUBDATE="$(LC_ALL=C date -u '+%a, %d %b %Y %H:%M:%S +0000')"
+  DL_URL="https://github.com/0xatrilla/Apple-MCP/releases/download/v$VERSION/$(basename "$DMG_PATH")"
+  ITEM_FILE="$(mktemp)"
+  cat > "$ITEM_FILE" <<ITEM
+    <item>
+      <title>Version $VERSION</title>
+      <pubDate>$PUBDATE</pubDate>
+      <sparkle:version>$VERSION</sparkle:version>
+      <sparkle:shortVersionString>$VERSION</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <enclosure url="$DL_URL" type="application/octet-stream" $SIG_LINE />
+    </item>
+ITEM
+  # Insert the new item directly after the marker (keeps newest first).
+  awk -v itemfile="$ITEM_FILE" '
+    { print }
+    /<!-- APPCAST:INSERT -->/ {
+      while ((getline line < itemfile) > 0) print line
+      close(itemfile)
+    }
+  ' "$APPCAST" > "$APPCAST.tmp" && mv "$APPCAST.tmp" "$APPCAST"
+  rm -f "$ITEM_FILE"
+  echo "Appcast updated: $APPCAST"
+else
+  echo "Skipping appcast update (sign_update or appcast.xml not found)." >&2
 fi
 
 echo "$DMG_PATH"
