@@ -8,10 +8,11 @@ export interface CommandResult {
 export async function runCommand(
   command: string,
   args: string[],
-  input?: string
+  input?: string,
+  options?: { cwd?: string }
 ): Promise<CommandResult> {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { stdio: ["pipe", "pipe", "pipe"] });
+    const child = spawn(command, args, { stdio: ["pipe", "pipe", "pipe"], cwd: options?.cwd });
     let stdout = "";
     let stderr = "";
 

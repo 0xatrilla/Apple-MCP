@@ -7,6 +7,9 @@ const here = dirname(fileURLToPath(import.meta.url));
 const projectRoot = resolve(here, "..", "..");
 const helperAppExecutable = join(projectRoot, "dist", "AppleAppsHelper.app", "Contents", "MacOS", "AppleAppsHelper");
 const bundledHelper = join(projectRoot, "dist", "AppleAppsControl.app", "Contents", "MacOS", "AppleAppsHelper");
+// When running from inside the packaged app, projectRoot is Contents/Resources
+// and the helper executable sits next to the app binary in Contents/MacOS.
+const siblingHelper = join(projectRoot, "..", "MacOS", "AppleAppsHelper");
 const releaseHelper = join(projectRoot, ".build", "release", "AppleAppsHelper");
 const debugHelper = join(projectRoot, ".build", "debug", "AppleAppsHelper");
 const bridgeCommands = new Set([
@@ -32,14 +35,14 @@ export async function runSwiftHelper<TInput extends object, TOutput = unknown>(
   }
 
   const helper = process.env.APPLE_APPS_HELPER
-    ?? [helperAppExecutable, bundledHelper, releaseHelper, debugHelper].find((candidate) => existsSync(candidate));
+    ?? [helperAppExecutable, bundledHelper, siblingHelper, releaseHelper, debugHelper].find((candidate) => existsSync(candidate));
 
   if (helper && existsSync(helper)) {
     const result = await runCommand(helper, [command], payload);
     return JSON.parse(result.stdout) as TOutput;
   }
 
-  const result = await runCommand("swift", ["run", "AppleAppsHelper", command], payload);
+  const result = await runCommand("swift", ["run", "AppleAppsHelper", command], payload, { cwd: projectRoot });
   return JSON.parse(result.stdout) as TOutput;
 }
 
