@@ -166,15 +166,18 @@ func createEvent(_ input: CalendarCreateInput) async throws -> EventRecord {
 @MainActor
 func fetchReminderRecords(matching predicate: NSPredicate) async -> [ReminderRecord] {
     await withCheckedContinuation { continuation in
-        store.fetchReminders(matching: predicate) { reminders in
-            let records = (reminders ?? []).map {
+        // EventKit fires this completion on its own background queue; @Sendable
+        // keeps it off the inherited @MainActor isolation to avoid a Swift 6
+        // executor-assertion crash when the callback runs off-main.
+        store.fetchReminders(matching: predicate) { @Sendable reminders in
+            let records = (reminders ?? []).map { reminder in
                 ReminderRecord(
-                    id: $0.calendarItemIdentifier,
-                    title: $0.title ?? "",
-                    calendar: $0.calendar.title,
-                    notes: $0.notes,
-                    dueDate: $0.dueDateComponents.flatMap { Calendar.current.date(from: $0) },
-                    completed: $0.isCompleted
+                    id: reminder.calendarItemIdentifier,
+                    title: reminder.title ?? "",
+                    calendar: reminder.calendar.title,
+                    notes: reminder.notes,
+                    dueDate: reminder.dueDateComponents.flatMap { Calendar.current.date(from: $0) },
+                    completed: reminder.isCompleted
                 )
             }
             continuation.resume(returning: records)

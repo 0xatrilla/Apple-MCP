@@ -906,17 +906,22 @@ final class EventKitBridge {
             ? store.predicateForCompletedReminders(withCompletionDateStarting: nil, ending: nil, calendars: calendars)
             : store.predicateForIncompleteReminders(withDueDateStarting: nil, ending: nil, calendars: calendars)
         return await withCheckedContinuation { continuation in
-            store.fetchReminders(matching: predicate) { reminders in
-                continuation.resume(returning: (reminders ?? []).map {
+            // EventKit invokes this completion on its own background queue
+            // (com.apple.eventkit.reminders.search). Marking it @Sendable keeps it
+            // off the @MainActor isolation it would otherwise inherit, avoiding a
+            // Swift 6 executor-assertion crash when the callback fires off-main.
+            store.fetchReminders(matching: predicate) { @Sendable reminders in
+                let records = (reminders ?? []).map { reminder in
                     BridgeReminderRecord(
-                        id: $0.calendarItemIdentifier,
-                        title: $0.title ?? "",
-                        calendar: $0.calendar.title,
-                        notes: $0.notes,
-                        dueDate: $0.dueDateComponents.flatMap { Calendar.current.date(from: $0) },
-                        completed: $0.isCompleted
+                        id: reminder.calendarItemIdentifier,
+                        title: reminder.title ?? "",
+                        calendar: reminder.calendar.title,
+                        notes: reminder.notes,
+                        dueDate: reminder.dueDateComponents.flatMap { Calendar.current.date(from: $0) },
+                        completed: reminder.isCompleted
                     )
-                })
+                }
+                continuation.resume(returning: records)
             }
         }
     }
